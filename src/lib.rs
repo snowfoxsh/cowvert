@@ -5,7 +5,7 @@ use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 
 #[derive(Debug)]
-enum Data<T: Clone> {
+pub enum Data<T: Clone> {
     Value(Option<T>),
     Ref(Rc<RefCell<T>>),
     Cow(Option<Rc<Option<T>>>),
