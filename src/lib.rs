@@ -162,7 +162,7 @@ impl<T: Clone> Data<T> {
     }
 }
 
-enum ValRef<'a, T: ?Sized + 'a> {
+pub enum ValRef<'a, T: ?Sized + 'a> {
     Raw(&'a T),
     Ref(Ref<'a, T>),
 }
@@ -178,7 +178,7 @@ impl<T: ?Sized> Deref for ValRef<'_, T> {
     }
 }
 
-enum ValRefMut<'a, T: ?Sized + 'a> {
+pub enum ValRefMut<'a, T: ?Sized + 'a> {
     Raw(&'a mut T),
     Ref(RefMut<'a, T>),
 }
