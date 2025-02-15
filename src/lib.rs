@@ -4,8 +4,6 @@ use std::cell::{Ref, RefCell, RefMut};
 use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 
-fn main() {}
-
 #[derive(Debug)]
 enum Data<T: Clone> {
     Value(Option<T>),
