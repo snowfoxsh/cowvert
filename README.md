@@ -6,7 +6,7 @@ See the tests to learn more.
 
 ### Example Usage
 
-#### Converting Between Value, Reference, and Copy-on-Write (COW)
+#### Converting Between Value and Reference
 
 ```rust
 use cowvert::Data;
@@ -20,11 +20,11 @@ fn main() {
 
     *ref_data.borrow_mut() += 50;
     
-    assert_eq!(*data.borrow(), 150); // Mutates the original
+    assert_eq!(*data.borrow(), 150); // mutates the original
 }
 ```
 
-#### Copy-on-Write (COW) Keeps the Original Unchanged
+#### Copy-on-Write (COW)
 
 ```rust
 use cowvert::Data;
@@ -35,7 +35,7 @@ fn main() {
     let mut cow_data = data.by_cow();
     *cow_data.borrow_mut() = "goodbye".to_string();
 
-    assert_eq!(*data.borrow(), "hello"); // Original remains unchanged
-    assert_eq!(*cow_data.borrow(), "goodbye"); // Copy is modified
+    assert_eq!(*data.borrow(), "hello"); // original remains unchanged
+    assert_eq!(*cow_data.borrow(), "goodbye"); // copy is modified
 }
 ```

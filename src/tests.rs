@@ -157,3 +157,27 @@ fn test_deeply_nested_cow() {
     assert_eq!(*cow1.borrow(), 42); // Original is unchanged
     assert_eq!(*cow2.borrow(), 99); // Modified copy
 }
+
+#[test]
+fn test_readme_example_1() {
+    let mut data = Data::value(100);
+    assert!(data.is_val());
+
+    let mut ref_data = data.by_ref();
+    assert!(ref_data.is_ref());
+
+    *ref_data.borrow_mut() += 50;
+
+    assert_eq!(*data.borrow(), 150); // Mutates the original
+}
+
+#[test]
+fn test_readme_example_2() {
+    let mut data = Data::value("hello".to_string());
+
+    let mut cow_data = data.by_cow();
+    *cow_data.borrow_mut() = "goodbye".to_string();
+
+    assert_eq!(*data.borrow(), "hello"); // Original remains unchanged
+    assert_eq!(*cow_data.borrow(), "goodbye"); // Copy is modified
+}
