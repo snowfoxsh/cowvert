@@ -1,4 +1,10 @@
 [package]
 name = "cowvert"
 version = "0.1.0"
+authors = ["Patrick Unick <dev_storm@winux.com"]
+description = "a flexible data container supporting owned, reference-counted, and copy-on-write semantics. designed for use in interpreters"
 edition = "2021"
+license = "MIT OR Apache-2.0"
+keywords = ["data", "ownership", "cow", "mutation"]
+categories = ["data-structures", "memory-management"]
+readme = "README.md"
