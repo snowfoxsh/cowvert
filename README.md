@@ -4,6 +4,8 @@ It is designed to be used in interpreters for handling the env.
 
 See the tests to learn more. 
 
+---
+
 ### Example Usage
 
 #### Converting Between Value, Reference, and Copy-on-Write (COW)
