@@ -1,6 +1,6 @@
 [package]
 name = "cowvert"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Patrick Unick <dev_storm@winux.com"]
 description = "a flexible data container supporting owned, reference-counted, and copy-on-write semantics. designed for use in interpreters"
 repository = "https://github.com/snowfoxsh/cowvert"
