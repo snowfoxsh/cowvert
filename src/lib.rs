@@ -1,10 +1,11 @@
 mod tests;
 
 use std::cell::{Ref, RefCell, RefMut};
+use std::fmt;
+use std::fmt::{Debug, Formatter};
 use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 
-#[derive(Debug)]
 pub enum Data<T: Clone> {
     Value(Option<T>),
     Ref(Rc<RefCell<T>>),
@@ -159,6 +160,43 @@ impl<T: Clone> Data<T> {
 
     pub fn is_cow(&self) -> bool {
         matches!(self, Data::Cow(_))
+    }
+}
+
+impl<T> Debug for Data<T> where T: Debug + Clone {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Data::Value(v) => {
+                let v = v.as_ref().unwrap();
+                f.debug_tuple("Val")
+                    .field(v)
+                    .finish()
+            }
+            Data::Ref(r) => {
+                let r = &*r.borrow();
+                f.debug_tuple("Ref")
+                    .field(r)
+                    .finish()
+            }
+            Data::Cow(c) => {
+                let c = c.as_ref()
+                    .unwrap()
+                    .as_ref()
+                    .as_ref()
+                    .unwrap();
+
+                f.debug_tuple("Cow")
+                    .field(c)
+                    .finish()
+            }
+        }
+    }
+}
+
+
+impl<T> Clone for Data<T> where T: Clone {
+    fn clone(&self) -> Self {
+        self.by_val()
     }
 }
 
