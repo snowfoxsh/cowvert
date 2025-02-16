@@ -181,3 +181,40 @@ fn test_readme_example_2() {
     assert_eq!(*data.borrow(), "hello"); // Original remains unchanged
     assert_eq!(*cow_data.borrow(), "goodbye"); // Copy is modified
 }
+
+#[test]
+fn test_collection() {
+    let create_collection = || {
+        let mut col = Data::reference(vec![]);
+
+        for i in 1..=5 {
+            col.borrow_mut().push(Data::value(format!("{i}")))
+        }
+
+        col
+    };
+
+    let mut col = create_collection();
+    let mut cr = col.by_ref();
+    let first_cow = cr.borrow_mut().get_mut(0).unwrap().by_cow();
+    assert_eq!(*first_cow.borrow(), "1");
+
+    assert_eq!(
+        col.borrow().iter().map(|d| d.borrow().clone()).collect::<Vec<_>>(),
+        vec!["1", "2", "3", "4", "5"]
+    );
+
+    let edit = |mut c: Data<Vec<Data<_>>>| {
+        let mut zero_ref = c.borrow_mut()[0].by_ref();
+        *zero_ref.borrow_mut() = "3".to_string();
+    };
+
+    edit(cr);
+
+    assert_eq!(
+        col.borrow().iter().map(|d| d.borrow().clone()).collect::<Vec<_>>(),
+        vec!["3", "2", "3", "4", "5"]
+    );
+    
+    assert_eq!(*first_cow.borrow(), "1"); // make sure it has not changed
+}
