@@ -1,4 +1,6 @@
 mod tests;
+mod c2;
+mod take;
 
 use std::cell::{Ref, RefCell, RefMut};
 use std::fmt;
