@@ -9,7 +9,7 @@ use crate::take::take;
 
 #[derive(Debug)]
 enum Defer<T: Clone> {
-    // guarantee bottom of stack
+    // guarantee terminal
     Own(T),
 
     // guarantee Data::Ref
@@ -61,7 +61,7 @@ impl<T: Clone> Data<T> {
                             // this will flatten the Defer
                             let mut data = ptr.by_ref();
                             let copied = data.by_ref();
-                            
+
                             (data, copied)
                         }
                     }
@@ -77,14 +77,26 @@ impl<T: Clone> Data<T> {
     pub fn borrow(&self) -> ValRef<'_, T> {
         match self {
             Data::Value(v) => ValRef::Raw(v),
-            Data::Ref(r) => ValRef::Ref(r.as_ref().borrow()),
+            Data::Ref(r) => {
+                Self::compress(r);
+                ValRef::Ref(Ref::map(r.borrow(), |defer| match defer {
+                    Defer::Own(v) => v,
+                    Defer::Ptr(_) => unreachable!("compression failed"),
+                }))
+            }
         }
     }
 
     pub fn borrow_mut(&mut self) -> ValRefMut<'_, T> {
         match self {
             Data::Value(v) => ValRefMut::Raw(v),
-            Data::Ref(r) => ValRefMut::Ref(r.borrow_mut()),
+            Data::Ref(r) => {
+                Self::compress(r);
+                ValRefMut::Ref(RefMut::map(r.borrow_mut(), |defer| match defer {
+                    Defer::Own(v) => v,
+                    Defer::Ptr(_) => unreachable!("compression failed"),
+                }))
+            }
         }
     }
 }
@@ -111,6 +123,69 @@ impl<T: Clone> Data<T> {
     }
 }
 
+impl<T> Clone for Data<T> where T: Clone {
+    fn clone(&self) -> Self {
+        self.by_val()
+    }
+}
+
+pub enum ValRef<'a, T: ?Sized + Clone + 'a> {
+    Raw(&'a T),
+    Ref(Ref<'a, T>),
+}
+
+impl<T: ?Sized + Clone> Deref for ValRef<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Raw(v) => *v,
+            Self::Ref(r) => &*r,
+        }
+    }
+}
+
+pub enum ValRefMut<'a, T: ?Sized + Clone + 'a> {
+    Raw(&'a mut T),
+    Ref(RefMut<'a, T>),
+}
+
+impl<T: ?Sized + Clone> Deref for ValRefMut<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Raw(v) => v,
+            Self::Ref(r) => &*r,
+        }
+    }
+}
+
+impl<T: ?Sized + Clone> DerefMut for ValRefMut<'_, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match self {
+            Self::Raw(v) => v,
+            Self::Ref(r) => &mut *r,
+        }
+    }
+}
+
+impl<T: Clone> Data<T> {
+    fn compress(rc: &Rc<RefCell<Defer<T>>>) {
+        let maybe_root = {
+            let defer = rc.borrow();
+            match &*defer {
+                Defer::Own(_) => None,
+                Defer::Ptr(next) => Some(next.by_val()),
+            }
+        };
+
+        if let Some(Data::Value(v)) = maybe_root {
+            *rc.borrow_mut() = Defer::Own(v);
+        }
+    }
+}
+
 impl<T> Debug for Data<T> where T: Debug + Clone {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
@@ -129,74 +204,132 @@ impl<T> Debug for Data<T> where T: Debug + Clone {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use super::Data;
 
-impl<T> Clone for Data<T> where T: Clone {
-    fn clone(&self) -> Self {
-        self.by_val()
+    /// Verify that `by_val` clones the value while `by_ref` shares it.
+    #[test]
+    fn test_by_val_and_by_ref() {
+        let mut orig = Data::value(0);
+        assert!(orig.is_val());
+
+        let mut valu = orig.by_val(); // deep copy
+        assert!(valu.is_val());
+
+        let mut refr = orig.by_ref(); // shared pointer
+        assert!(orig.is_ref());
+        assert!(refr.is_ref());
+
+        assert_eq!(*orig.borrow(), 0);
+
+        *valu.borrow_mut() = 1; // only the copy changes
+        *refr.borrow_mut() = 2; // shared copy updates both
+
+        assert_eq!(*orig.borrow(), 2);
+        assert_eq!(*valu.borrow(), 1);
+        assert_eq!(*refr.borrow(), 2);
     }
-}
 
-pub enum ValRef<'a, T: ?Sized + Clone + 'a> {
-    Raw(&'a T),
-    Ref(Ref<'a, Defer<T>>),
-}
+    /// Converting a `Value` to a `Ref`, then mutating through either handle,
+    /// always reflects the change everywhere.
+    #[test]
+    fn test_ref_conversion_and_mutation() {
+        let mut data = Data::value(100);
+        assert!(data.is_val());
 
-impl<T: ?Sized + Clone> Deref for ValRef<'_, T> {
-    type Target = T;
+        let mut ref_data = data.by_ref();
+        assert!(ref_data.is_ref());
+        assert!(data.is_ref());
 
-    fn deref(&self) -> &Self::Target {
-        match self {
-            Self::Raw(v) => *v,
-            Self::Ref(r) => {
-                match r.deref() {
-                    Defer::Own(_) => {}
-                    Defer::Ptr(_) => {}
-                }
-            }
+        assert_eq!(*ref_data.borrow(), 100);
+
+        *ref_data.borrow_mut() += 50;
+        assert_eq!(*ref_data.borrow(), 150);
+        assert_eq!(*data.borrow(), 150);
+    }
+
+    /// Two `by_ref` calls on the same node share the underlying `Rc`.
+    #[test]
+    fn test_ref_shared_mutation() {
+        let mut ref_data = Data::refer(5);
+        assert!(ref_data.is_ref());
+
+        let mut ref_clone = ref_data.by_ref();
+        assert!(ref_clone.is_ref());
+
+        *ref_clone.borrow_mut() *= 2;
+        assert_eq!(*ref_data.borrow(), 10);
+        assert_eq!(*ref_clone.borrow(), 10);
+    }
+
+    /// A `borrow()` must end before a `borrow_mut()`.
+    #[test]
+    fn test_borrow_then_mut_borrow() {
+        let mut data = Data::value(100);
+        {
+            let borrowed = data.borrow();
+            assert_eq!(*borrowed, 100);
+            // `borrowed` dropped here
         }
-    }
-}
-
-pub enum ValRefMut<'a, T: ?Sized + Clone + 'a> {
-    Raw(&'a mut T),
-    Ref(RefMut<'a, Defer<T>>),
-}
-
-impl<T: ?Sized + Clone> Deref for ValRefMut<'_, T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        match self {
-            Self::Raw(v) => v,
-            Self::Ref(v) => {
-                // let defer = 
-            },
-        }
-    }
-}
-
-impl<T: ?Sized + Clone> DerefMut for ValRefMut<'_, T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        match self {
-            Self::Raw(v) => v,
-            Self::Ref(v) => {
-                
-            }
-        }
-    }
-}
-
-fn test() {
-    let cell = RefCell::new("hello world");
-
-    {
-        let mut o = cell.borrow_mut();
-        let mut t = cell.borrow_mut();
-        let im = cell.borrow();
 
         {
-            o.deref_mut();
+            let mut borrowed_mut = data.borrow_mut();
+            *borrowed_mut += 50;
+            assert_eq!(*borrowed_mut, 150);
         }
-        t.deref_mut();
+    }
+
+    /// Path compression: after first access, intermediate `Defer::Ptr`
+    /// becomes an `Own`, so later borrows borrow just one cell.
+    #[test]
+    fn test_path_compression() {
+        // Build a chain: Ptr -> Ptr -> Value(7)
+        let leaf = Data::value(7);
+        let middle = Data::Ref(Rc::new(RefCell::new(super::Defer::Ptr(leaf))));
+        let mut root = Data::Ref(Rc::new(RefCell::new(super::Defer::Ptr(middle))));
+
+        // First borrow flattens the chain
+        assert_eq!(*root.borrow(), 7);
+
+        // A second borrow should not panic and still return 7
+        assert_eq!(*root.borrow(), 7);
+    }
+
+    /// A practical nested‑collection example that mixes `Value` and `Ref`.
+    #[test]
+    fn test_nested_collection_edit() {
+        // Data<Vec<Data<String>>>
+        let build_collection = || {
+            let mut v = Data::refer(Vec::new());
+            for i in 1..=5 {
+                v.borrow_mut().push(Data::value(i.to_string()));
+            }
+            v
+        };
+
+        let mut col = build_collection();
+        let mut col_ref = col.by_ref(); // shared pointer to the vec
+        {
+            // clone element[0] by value, keep a copy for later
+            let first_copy = col_ref.borrow()[0].by_val();
+            assert_eq!(*first_copy.borrow(), "1");
+
+            // mutate element[0] through the shared `Ref`
+            *col_ref.borrow_mut()[0].borrow_mut() = "X".to_string();
+
+            // The original collection changed …
+            let snapshot: Vec<_> = col
+                .borrow()
+                .iter()
+                .map(|d| d.borrow().clone())
+                .collect();
+            assert_eq!(snapshot, ["X", "2", "3", "4", "5"]);
+
+            // … but the by‑value copy did not.
+            assert_eq!(*first_copy.borrow(), "1");
+        }
     }
 }
