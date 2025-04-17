@@ -1,6 +1,4 @@
-use std::any::Any;
 use std::cell::{Ref, RefCell, RefMut};
-use std::collections::HashMap;
 use std::fmt;
 use std::fmt::{Debug, Formatter};
 use std::ops::{Deref, DerefMut};
@@ -61,7 +59,6 @@ impl<T: Clone> Data<T> {
                             // this will flatten the Defer
                             let mut data = ptr.by_ref();
                             let copied = data.by_ref();
-
                             (data, copied)
                         }
                     }
@@ -71,6 +68,31 @@ impl<T: Clone> Data<T> {
             (data, copied)
         })
     }
+
+    pub fn set(&mut self, other: Data<T>) {
+        take(self, move |mut this| {
+            // pull out the terminal T from whatever other is
+            let new_val = Self::clone_terminal(&other);
+
+            // write it into this in-place
+            match &mut this {
+                Data::Value(cur) => {
+                    *cur = new_val;
+                }
+                Data::Ref(rc) => {
+                    // flatten our own Rc to an Own(T)
+                    Self::un_defer(rc);
+                    // now overwrite that T
+                    if let Defer::Own(cur) = &mut *rc.borrow_mut() {
+                        *cur = new_val;
+                    }
+                }
+            }
+
+            // return the same this (so we never swap out the Rc)
+            (this, ())
+        });
+    }
 }
 
 impl<T: Clone> Data<T> {
@@ -78,10 +100,10 @@ impl<T: Clone> Data<T> {
         match self {
             Data::Value(v) => ValRef::Raw(v),
             Data::Ref(r) => {
-                Self::compress(r);
+                Self::un_defer(r);
                 ValRef::Ref(Ref::map(r.borrow(), |defer| match defer {
                     Defer::Own(v) => v,
-                    Defer::Ptr(_) => unreachable!("compression failed"),
+                    Defer::Ptr(data) => unreachable!("compression failed"),
                 }))
             }
         }
@@ -91,7 +113,7 @@ impl<T: Clone> Data<T> {
         match self {
             Data::Value(v) => ValRefMut::Raw(v),
             Data::Ref(r) => {
-                Self::compress(r);
+                Self::un_defer(r);
                 ValRefMut::Ref(RefMut::map(r.borrow_mut(), |defer| match defer {
                     Defer::Own(v) => v,
                     Defer::Ptr(_) => unreachable!("compression failed"),
@@ -171,17 +193,46 @@ impl<T: ?Sized + Clone> DerefMut for ValRefMut<'_, T> {
 }
 
 impl<T: Clone> Data<T> {
-    fn compress(rc: &Rc<RefCell<Defer<T>>>) {
-        let maybe_root = {
-            let defer = rc.borrow();
-            match &*defer {
-                Defer::Own(_) => None,
-                Defer::Ptr(next) => Some(next.by_val()),
+    /// Recursively follow any `Defer::Ptr` chain and clone the terminal value.
+    fn clone_terminal(data: &Data<T>) -> T {
+        match data {
+            Data::Value(v) => v.clone(),
+            Data::Ref(r) => {
+                let defer = r.borrow();
+                match &*defer {
+                    Defer::Own(v) => v.clone(),
+                    Defer::Ptr(next) => Self::clone_terminal(next),
+                }
             }
+        }
+    }
+
+    /// Flatten a single `Rc<RefCell<Defer<T>>>` so that it becomes `Defer::Own`.
+    fn un_defer(rc: &Rc<RefCell<Defer<T>>>) {
+        // Fast path: already compressed.
+        if matches!(*rc.borrow(), Defer::Own(_)) {
+            return;
+        }
+
+        // clone the value at the end of the chain without
+        // holding a mutable borrow on `rc`
+        let value = {
+            let defer = rc.borrow();
+            let Defer::Ptr(target) = &*defer else {
+                // SAFETY: covered by the early‑out above.
+                return;
+            };
+            Self::clone_terminal(target)
         };
 
-        if let Some(Data::Value(v)) = maybe_root {
-            *rc.borrow_mut() = Defer::Own(v);
+        // now replace the pointer with the owned value
+        *rc.borrow_mut() = Defer::Own(value);
+    }
+
+    /// Compress the current `Data` in place.
+    pub fn compress(&mut self) {
+        if let Data::Ref(r) = self {
+            Self::un_defer(r);
         }
     }
 }
@@ -291,11 +342,41 @@ mod tests {
         let middle = Data::Ref(Rc::new(RefCell::new(super::Defer::Ptr(leaf))));
         let mut root = Data::Ref(Rc::new(RefCell::new(super::Defer::Ptr(middle))));
 
+        println!("{:#?}", root);
         // First borrow flattens the chain
         assert_eq!(*root.borrow(), 7);
 
+        println!("{:#?}", root);
         // A second borrow should not panic and still return 7
         assert_eq!(*root.borrow(), 7);
+    }
+
+    #[test]
+    fn test_set() {
+        let mut sub = Data::value(7);
+        let mut dangle = sub.by_ref();
+
+        let mut root = Data::refer(10);
+        let mut leaf1 = root.by_ref();
+        let mut leaf2 = root.by_ref();
+
+        
+        // println!("{:#?}", root); // should be 7
+        assert_eq!(*sub.borrow(), 7);
+        assert_eq!(*dangle.borrow(), 7);
+        
+        assert_eq!(*root.borrow(), 10);
+        assert_eq!(*leaf1.borrow(), 10);
+        assert_eq!(*leaf2.borrow(), 10);
+        
+        root.set(sub);
+
+
+        assert_eq!(*dangle.borrow(), 7);
+
+        assert_eq!(*root.borrow(), 7);
+        assert_eq!(*leaf1.borrow(), 7);
+        assert_eq!(*leaf2.borrow(), 7);
     }
 
     /// A practical nested‑collection example that mixes `Value` and `Ref`.
