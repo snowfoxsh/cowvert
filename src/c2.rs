@@ -69,27 +69,35 @@ impl<T: Clone> Data<T> {
         })
     }
 
+    /// Replace the value stored in `self` with the terminal value found in
+    /// `other`, propagating the change to all existing aliases of `self`.
     pub fn set(&mut self, other: Data<T>) {
-        take(self, move |mut this| {
-            // pull out the terminal T from whatever other is
-            let new_val = Self::clone_terminal(&other);
+        // pull out a fresh clone of the *actual* value inside `other`
+        let new_val: T = (*other.borrow()).clone();
 
-            // write it into this in-place
+        // take moves out self, lets us mutate it, and then puts it back
+        take(self, move |mut this| {
             match &mut this {
+                // No other aliases exist – just overwrite the scalar
                 Data::Value(cur) => {
                     *cur = new_val;
                 }
+
+                // We already have a Rc; update the pointed to value, so every
+                // alias of the same Rc observes the change
                 Data::Ref(rc) => {
-                    // flatten our own Rc to an Own(T)
+                    // Make sure `rc` is flattened first.
                     Self::un_defer(rc);
-                    // now overwrite that T
-                    if let Defer::Own(cur) = &mut *rc.borrow_mut() {
-                        *cur = new_val;
+
+                    let mut defer = rc.borrow_mut();
+                    match &mut *defer {
+                        Defer::Own(cur) => *cur = new_val,
+                        Defer::Ptr(_)    => unreachable!("un_defer failed"),
                     }
                 }
             }
 
-            // return the same this (so we never swap out the Rc)
+            // put the (possibly modified) Data back into self
             (this, ())
         });
     }
@@ -100,7 +108,7 @@ impl<T: Clone> Data<T> {
         match self {
             Data::Value(v) => ValRef::Raw(v),
             Data::Ref(r) => {
-                Self::un_defer(r);
+                // Self::un_defer(r);
                 ValRef::Ref(Ref::map(r.borrow(), |defer| match defer {
                     Defer::Own(v) => v,
                     Defer::Ptr(data) => unreachable!("compression failed"),
@@ -146,12 +154,13 @@ impl<T: Clone> Data<T> {
 }
 
 impl<T> Clone for Data<T> where T: Clone {
+    /// An alias for [Self::by_val]
     fn clone(&self) -> Self {
         self.by_val()
     }
 }
 
-pub enum ValRef<'a, T: ?Sized + Clone + 'a> {
+pub enum ValRef<'a, T: Clone + 'a> {
     Raw(&'a T),
     Ref(Ref<'a, T>),
 }
@@ -167,7 +176,7 @@ impl<T: ?Sized + Clone> Deref for ValRef<'_, T> {
     }
 }
 
-pub enum ValRefMut<'a, T: ?Sized + Clone + 'a> {
+pub enum ValRefMut<'a, T: Clone + 'a> {
     Raw(&'a mut T),
     Ref(RefMut<'a, T>),
 }
@@ -194,39 +203,37 @@ impl<T: ?Sized + Clone> DerefMut for ValRefMut<'_, T> {
 
 impl<T: Clone> Data<T> {
     /// Recursively follow any `Defer::Ptr` chain and clone the terminal value.
-    fn clone_terminal(data: &Data<T>) -> T {
+    fn clone_terminal_rc(data: &Data<T>) -> Rc<RefCell<Defer<T>>> {
         match data {
-            Data::Value(v) => v.clone(),
+            Data::Value(v) => Rc::new(RefCell::new(Defer::Own(v.clone()))),
             Data::Ref(r) => {
                 let defer = r.borrow();
                 match &*defer {
-                    Defer::Own(v) => v.clone(),
-                    Defer::Ptr(next) => Self::clone_terminal(next),
+                    Defer::Own(_v) => Rc::clone(&r),
+                    Defer::Ptr(next) => Self::clone_terminal_rc(next),
                 }
             }
         }
     }
 
     /// Flatten a single `Rc<RefCell<Defer<T>>>` so that it becomes `Defer::Own`.
-    fn un_defer(rc: &Rc<RefCell<Defer<T>>>) {
-        // Fast path: already compressed.
+    fn un_defer(rc: &mut Rc<RefCell<Defer<T>>>) {
+        // fast path: already compressed.
         if matches!(*rc.borrow(), Defer::Own(_)) {
             return;
         }
 
-        // clone the value at the end of the chain without
-        // holding a mutable borrow on `rc`
-        let value = {
+        let root = {
             let defer = rc.borrow();
             let Defer::Ptr(target) = &*defer else {
                 // SAFETY: covered by the early‑out above.
                 return;
             };
-            Self::clone_terminal(target)
+            Self::clone_terminal_rc(target)
         };
 
-        // now replace the pointer with the owned value
-        *rc.borrow_mut() = Defer::Own(value);
+        // replace the pointer with the new pointer
+        *rc = root;
     }
 
     /// Compress the current `Data` in place.
@@ -362,12 +369,12 @@ mod tests {
 
         
         // println!("{:#?}", root); // should be 7
-        assert_eq!(*sub.borrow(), 7);
-        assert_eq!(*dangle.borrow(), 7);
+        assert_eq!(*sub.borrow_mut(), 7);
+        assert_eq!(*dangle.borrow_mut(), 7);
         
-        assert_eq!(*root.borrow(), 10);
-        assert_eq!(*leaf1.borrow(), 10);
-        assert_eq!(*leaf2.borrow(), 10);
+        assert_eq!(*root.borrow_mut(), 10);
+        assert_eq!(*leaf1.borrow_mut(), 10);
+        assert_eq!(*leaf2.borrow_mut(), 10);
         
         root.set(sub);
 
@@ -412,5 +419,155 @@ mod tests {
             // … but the by‑value copy did not.
             assert_eq!(*first_copy.borrow(), "1");
         }
+    }
+}
+
+
+#[cfg(test)]
+mod additional_tests {
+    use super::Data;
+
+    /// 1. Cloning a `Ref` yields a `Value` (deep clone)
+    #[test]
+    fn test_clone_returns_value() {
+        let orig = Data::refer(42);
+        assert!(orig.is_ref());
+        let cloned = orig.clone();
+        assert!(cloned.is_val());
+        assert_eq!(*cloned.borrow(), 42);
+    }
+
+    /// 2. set on two Values updates correctly
+    #[test]
+    fn test_set_value_to_value() {
+        let mut d = Data::value(1);
+        d.set(Data::value(2));
+        assert_eq!(*d.borrow(), 2);
+    }
+
+    /// 3. set a Ref with a Value
+    #[test]
+    fn test_set_ref_to_value() {
+        let mut root = Data::refer(1);
+        let handle = root.by_ref();
+        root.set(Data::value(3));
+        assert_eq!(*handle.borrow(), 3);
+    }
+
+    /// 4. set a Value with a Ref
+    #[test]
+    fn test_set_value_to_ref() {
+        let mut root = Data::value(1);
+        let handle = root.by_ref();
+        root.set(Data::refer(5));
+        assert_eq!(*handle.borrow(), 5);
+    }
+
+    /// 5. Repeated set calls propagate
+    #[test]
+    fn test_repeated_set() {
+        let mut root = Data::refer(0);
+        let handle = root.by_ref();
+        root.set(Data::value(10));
+        root.set(Data::value(20));
+        assert_eq!(*handle.borrow(), 20);
+    }
+
+    /// 6. compress on a Value is no-op
+    #[test]
+    fn test_compress_on_value() {
+        let mut v = Data::value(5);
+        v.compress();
+        assert!(v.is_val());
+        assert_eq!(*v.borrow(), 5);
+    }
+
+    /// 7. compress on a Ref flattens repeatedly
+    #[test]
+    fn test_compress_on_ref() {
+        let leaf = Data::value(7);
+        let mid = Data::refer(leaf.clone().borrow().clone());
+        let mut root = Data::refer(mid.clone().borrow().clone());
+        // multiple compress calls
+        root.compress();
+        root.compress();
+        assert_eq!(*root.borrow(), 7);
+    }
+
+    /// 8. Nested Vec by_val produces deep clone
+    #[test]
+    fn test_nested_by_val_deep_clone() {
+        let mut col = Data::refer(vec![Data::value(1), Data::value(2)]);
+        let copy = col.by_val();
+        // mutate original
+        *col.borrow_mut()[0].borrow_mut() = 99;
+        // copy unchanged
+        assert_eq!(*copy.borrow()[0].borrow(), 1);
+    }
+
+    /// 9. Nested Vec by_ref shares underlying
+    #[test]
+    fn test_nested_by_ref_shared() {
+        let mut col = Data::refer(vec![Data::value(1), Data::value(2)]);
+        let mut r1 = col.by_ref();
+        *r1.borrow_mut()[1].borrow_mut() = 88;
+        assert_eq!(*col.borrow()[1].borrow(), 88);
+    }
+
+    /// 10. Mixed by_ref then set
+    #[test]
+    fn test_mixed_by_ref_value_then_set() {
+        let mut root = Data::value(100);
+        let handle = root.by_ref();
+        root.set(Data::value(50));
+        assert_eq!(*handle.borrow(), 50);
+    }
+
+    /// 11. borrow after drop of previous borrow
+    #[test]
+    fn test_multiple_borrows() {
+        let mut d = Data::value(20);
+        {
+            let b = d.borrow();
+            assert_eq!(*b, 20);
+        }
+        {
+            let mut bm = d.borrow_mut();
+            *bm += 5;
+            assert_eq!(*bm, 25);
+        }
+        assert_eq!(*d.borrow(), 25);
+    }
+
+    /// 13. set with Ref does not share other Rc
+    #[test]
+    fn test_set_ref_does_not_share_rc() {
+        let mut root = Data::refer(1);
+        let other = Data::refer(2);
+        let h_root = root.by_ref();
+        root.set(other.clone());
+        drop(other);
+        assert_eq!(*h_root.borrow(), 2);
+    }
+
+    /// 14. multiple mutations through borrow_mut
+    #[test]
+    fn test_val_ref_mut_multiple_mutations() {
+        let mut root = Data::refer(5);
+        let mut r1 = root.by_ref();
+        *r1.borrow_mut() += 1;
+        *r1.borrow_mut() += 2;
+        assert_eq!(*root.borrow(), 8);
+    }
+
+    /// 15. clone() on complex Data
+    #[test]
+    fn test_clone_after_nested_by_ref() {
+        let mut root = Data::refer(vec![Data::value(10)]);
+        let mut r = root.by_ref();
+        *r.borrow_mut()[0].borrow_mut() = 42;
+        let deep_clone = root.clone();
+        assert!(deep_clone.is_val());
+        assert_eq!(*deep_clone.borrow()[0].borrow(), 42);
     }
 }
