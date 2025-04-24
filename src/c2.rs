@@ -1,4 +1,4 @@
-use std::cell::{Ref, RefCell, RefMut, UnsafeCell};
+use std::cell::{Ref, RefCell, RefMut};
 use std::fmt;
 use std::fmt::{Debug, Formatter};
 use std::ops::{Deref, DerefMut};
@@ -104,62 +104,6 @@ impl<T: Clone> Data<T> {
 }
 
 impl<T: Clone> Data<T> {
-    
-
-    
-    
-    /// dont use this whenever possible. this is a last resort. it bypasses 
-    pub fn borrow_no_compress(&self) -> ValRef<'_, T> {
-        match self {
-            // trivial case – plain value on the stack
-            Data::Value(v) => ValRef::Raw(v),
-
-            // shared, possibly‑deferred value behind an Rc<RefCell<…>>
-            Data::Ref(rc) => {
-                // optimistic read
-                let defer = rc.borrow();
-
-                // fast‑path: already `Own`
-                if let Defer::Own(_) = &*defer {
-                    return ValRef::Ref(Ref::map(defer, |d| match d {
-                        Defer::Own(v) => v,
-                        Defer::Ptr(_)  => unreachable!(),
-                    }));
-                }
-
-                // slow‑path: we’ve hit a pointer – resolve & compress
-                let target = match &*defer {
-                    Defer::Ptr(next) => next,
-                    _                => unreachable!(),
-                };
-
-                // clone the *terminal* value while we still hold only a
-                // shared borrow on `rc` (safe because `target` is a different
-                // RefCell)
-                let value_clone = {
-                    let v_ref = target.borrow_no_compress();
-                    (*v_ref).clone()
-                };
-
-                // release the shared borrow so we can mutate
-                drop(defer);
-
-                // overwrite `Ptr` → `Own(cloned_value)`  (path compression)
-                {
-                    let mut defer_mut = rc.borrow_mut();
-                    *defer_mut = Defer::Own(value_clone);
-                }
-
-                // 3️⃣  Now we’re definitely `Own`; create a mapped Ref
-                let defer = rc.borrow();
-                ValRef::Ref(Ref::map(defer, |d| match d {
-                    Defer::Own(v) => v,
-                    Defer::Ptr(_) => unreachable!("compression failed"),
-                }))
-            }
-        }
-    }
-
     pub fn borrow(&mut self) -> ValRef<'_, T> {
         match self {
             Data::Value(v) => ValRef::Raw(v),
@@ -219,17 +163,15 @@ impl<T> Clone for Data<T> where T: Clone {
 pub enum ValRef<'a, T: Clone + 'a> {
     Raw(&'a T),
     Ref(Ref<'a, T>),
-    Rec(&'a ValRef<'a, T>)
 }
 
-impl<T: ?Sized + Clone> Deref for ValRef<'_, T> {
+impl<T: Clone> Deref for ValRef<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
         match self {
-            Self::Rec(rec) => rec.deref(), // recursive deref
-            Self::Raw(v) => *v,
-            Self::Ref(r) => &*r,
+            Self::Raw(v) => v,
+            Self::Ref(r) => r,
         }
     }
 }
@@ -239,18 +181,18 @@ pub enum ValRefMut<'a, T: Clone + 'a> {
     Ref(RefMut<'a, T>),
 }
 
-impl<T: ?Sized + Clone> Deref for ValRefMut<'_, T> {
+impl<T: Clone> Deref for ValRefMut<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
         match self {
             Self::Raw(v) => v,
-            Self::Ref(r) => &*r,
+            Self::Ref(r) => r,
         }
     }
 }
 
-impl<T: ?Sized + Clone> DerefMut for ValRefMut<'_, T> {
+impl<T: Clone> DerefMut for ValRefMut<'_, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         match self {
             Self::Raw(v) => v,
@@ -468,9 +410,9 @@ mod tests {
 
             // The original collection changed …
             let snapshot: Vec<_> = col
-                .borrow()
-                .iter()
-                .map(|d| d.borrow_no_compress().clone())
+                .borrow_mut()
+                .iter_mut()
+                .map(|d| d.borrow().clone())
                 .collect();
             
             assert_eq!(snapshot, ["X", "2", "3", "4", "5"]);
