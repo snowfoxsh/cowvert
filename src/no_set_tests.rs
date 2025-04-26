@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use crate::Data;
+use crate::no_set::Data;
 
 #[test]
 fn test_by_val_and_by_ref() {
