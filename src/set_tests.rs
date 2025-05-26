@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use std::cell::RefCell;
 use std::rc::Rc;
 use crate::Data;
@@ -15,9 +17,12 @@ fn test_by_val_and_by_ref() {
     let mut refr = orig.by_ref(); // shared pointer
     assert!(orig.is_ref());
     assert!(refr.is_ref());
+    
 
     assert_eq!(*orig.borrow(), 0);
 
+    let stat = refr.by_ref();
+    
     *valu.borrow_mut() = 1; // only the copy changes
     *refr.borrow_mut() = 2; // shared copy updates both
 

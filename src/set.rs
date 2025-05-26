@@ -104,6 +104,23 @@ impl<T: Clone> Data<T> {
 }
 
 impl<T: Clone> Data<T> {
+    pub fn with<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&T) -> R {
+        match self {
+            Data::Value(t) => f(t),
+            Data::Ref(r) => {
+                match r.borrow_mut().deref_mut() {
+                    Defer::Own(t) => f(t),
+                    Defer::Ptr(data) => {
+                        // borrow will preform limited path compression
+                        f(data.borrow().deref())
+                    }
+                }
+            }
+        }
+    }
+
     pub fn borrow(&mut self) -> ValRef<'_, T> {
         match self {
             Data::Value(v) => ValRef::Raw(v),
