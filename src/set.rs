@@ -1,4 +1,4 @@
-use std::cell::{Ref, RefCell, RefMut};
+use std::cell::{BorrowError, BorrowMutError, Ref, RefCell, RefMut};
 use std::fmt;
 use std::fmt::{Debug, Formatter};
 use std::ops::{Deref, DerefMut};
@@ -120,6 +120,29 @@ impl<T: Clone> Data<T> {
             }
         }
     }
+    
+    /// used when you need multiple refs,
+    /// but you could be referencing the same value
+    /// it will return Err if self is already borrowed
+    pub fn try_with_other_mut<F, R>(&mut self, other: &mut Self, f: F) -> Result<R, BorrowMutError> 
+    where
+        F: FnOnce(ValRefMut<T>, Option<ValRefMut<T>>) -> R {
+        // attempt to borrow self
+        // if it fails a ref already exists
+        // this state is unrecoverable
+        let a = self.try_borrow_mut()?;
+        
+        Ok(match other.try_borrow_mut() {
+            Ok(b) => {
+                // success, proceed as normal
+                f(a, Some(b))
+            }
+            Err(_) => {
+                // it is the same thing being borrowed
+                f(a, None)
+            }
+        })
+    }
 
     pub fn borrow(&mut self) -> ValRef<'_, T> {
         match self {
@@ -134,6 +157,19 @@ impl<T: Clone> Data<T> {
         }
     }
 
+    pub fn try_borrow(&mut self) -> Result<ValRef<'_, T>, BorrowError> {
+        match self {
+            Data::Value(v) => Ok(ValRef::Raw(v)),
+            Data::Ref(r) => {
+                Self::un_defer(r);
+                Ok(ValRef::Ref(Ref::map(r.try_borrow()?, |defer| match defer {
+                    Defer::Own(v) => v,
+                    Defer::Ptr(_) => unreachable!("compression failed"),
+                })))
+            }
+        }
+    }
+
     pub fn borrow_mut(&mut self) -> ValRefMut<'_, T> {
         match self {
             Data::Value(v) => ValRefMut::Raw(v),
@@ -143,6 +179,21 @@ impl<T: Clone> Data<T> {
                     Defer::Own(v) => v,
                     Defer::Ptr(_) => unreachable!("compression failed"),
                 }))
+            }
+        }
+    }
+
+    pub fn try_borrow_mut(&mut self) -> Result<ValRefMut<'_, T>, BorrowMutError> {
+        match self {
+            Data::Value(v) => Ok(ValRefMut::Raw(v)),
+            Data::Ref(r) => {
+                Self::un_defer(r);
+
+
+                Ok(ValRefMut::Ref(RefMut::map(r.try_borrow_mut()?, |defer| match defer {
+                    Defer::Own(v) => v,
+                    Defer::Ptr(_) => unreachable!("compression failed"),
+                })))
             }
         }
     }
