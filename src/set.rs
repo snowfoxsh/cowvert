@@ -187,9 +187,10 @@ impl<T: Clone> Data<T> {
         match self {
             Data::Value(v) => Ok(ValRefMut::Raw(v)),
             Data::Ref(r) => {
+                // make sure we can actually borrow it so we dont panic
+                r.try_borrow_mut()?;
+                
                 Self::un_defer(r);
-
-
                 Ok(ValRefMut::Ref(RefMut::map(r.try_borrow_mut()?, |defer| match defer {
                     Defer::Own(v) => v,
                     Defer::Ptr(_) => unreachable!("compression failed"),
