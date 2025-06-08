@@ -1,11 +1,10 @@
 use std::cell::{BorrowError, BorrowMutError, Ref, RefCell, RefMut};
 use std::fmt;
-use std::fmt::{Debug, Formatter};
+use std::fmt::{Debug, Formatter, Write};
 use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 use crate::take::take;
 
-#[derive(Debug)]
 pub(crate) enum Defer<T: Clone> {
     // guarantee terminal
     Own(T),
@@ -17,6 +16,22 @@ pub(crate) enum Defer<T: Clone> {
 pub enum Data<T: Clone> {
     Value(T),
     Ref(Rc<RefCell<Defer<T>>>),
+}
+
+impl<T: Debug + Clone> Debug for Data<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Data::Value(v) => f.write_fmt(format_args!("{v:?}")),
+            Data::Ref(r) => {
+                f.write_str("& ")?;
+                let borrow = r.borrow();
+                match borrow.deref() {
+                    Defer::Own(v) => f.write_fmt(format_args!("{v:?}")),
+                    Defer::Ptr(p) => f.write_fmt(format_args!("-> x")),
+                }
+            }
+        }
+    }
 }
 
 impl<T: Clone> Data<T> {
@@ -124,25 +139,26 @@ impl<T: Clone> Data<T> {
     /// used when you need multiple refs,
     /// but you could be referencing the same value
     /// it will return Err if self is already borrowed
-    pub fn try_with_other_mut<F, R>(&mut self, other: &mut Self, f: F) -> Result<R, BorrowMutError> 
+    pub fn try_with_other_mut<F, R>(&mut self, other: &mut Self, f: F) -> Result<R, BorrowMutError>
     where
-        F: FnOnce(ValRefMut<T>, Option<ValRefMut<T>>) -> R {
-        // attempt to borrow self
-        // if it fails a ref already exists
-        // this state is unrecoverable
-        let a = self.try_borrow_mut()?;
-        
-        Ok(match other.try_borrow_mut() {
-            Ok(b) => {
-                // success, proceed as normal
-                f(a, Some(b))
+        F: FnOnce(ValRefMut<T>, Option<ValRefMut<T>>) -> R,
+    {
+        // borrow self; fail early if we already hold a mut‑borrow
+        let self_ref = self.try_borrow_mut()?;
+
+        // try to borrow the other binding
+        match other.try_borrow_mut() {
+            Ok(other_ref) => {
+                // distinct values: pass lhs (=other) first, rhs (=self) second
+                Ok(f(other_ref, Some(self_ref)))
             }
             Err(_) => {
-                // it is the same thing being borrowed
-                f(a, None)
+                // both names hit the same value; caller gets one handle
+                Ok(f(self_ref, None))
             }
-        })
+        }
     }
+
 
     pub fn borrow(&mut self) -> ValRef<'_, T> {
         match self {
@@ -313,20 +329,20 @@ impl<T: Clone> Data<T> {
     }
 }
 
-impl<T> Debug for Data<T> where T: Debug + Clone {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            Data::Value(v) => {
-                f.debug_tuple("Val")
-                    .field(v)
-                    .finish()
-            }
-            Data::Ref(r) => {
-                let r = &*r.borrow();
-                f.debug_tuple("Ref")
-                    .field(r)
-                    .finish()
-            }
-        }
-    }
-}
+// impl<T> Debug for Data<T> where T: Debug + Clone {
+//     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+//         match self {
+//             Data::Value(v) => {
+//                 f.debug_tuple("Val")
+//                     .field(v)
+//                     .finish()
+//             }
+//             Data::Ref(r) => {
+//                 let r = &*r.borrow();
+//                 f.debug_tuple("Ref")
+//                     .field(r)
+//                     .finish()
+//             }
+//         }
+//     }
+// }
