@@ -9,3 +9,6 @@ license = "MIT OR Apache-2.0"
 keywords = ["data", "ownership", "cow", "mutation"]
 categories = ["data-structures", "memory-management"]
 readme = "README.md"
+
+[profile.release]
+lto = "fat"

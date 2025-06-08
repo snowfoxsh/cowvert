@@ -13,6 +13,7 @@ pub(crate) enum Defer<T: Clone> {
     Ptr(Data<T>)
 }
 
+#[allow(private_interfaces)]
 pub enum Data<T: Clone> {
     Value(T),
     Ref(Rc<RefCell<Defer<T>>>),
@@ -119,6 +120,7 @@ impl<T: Clone> Data<T> {
 }
 
 impl<T: Clone> Data<T> {
+    #[inline]
     pub fn with<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&T) -> R {
@@ -139,6 +141,7 @@ impl<T: Clone> Data<T> {
     /// used when you need multiple refs,
     /// but you could be referencing the same value
     /// it will return Err if self is already borrowed
+    #[inline]
     pub fn try_with_other_mut<F, R>(&mut self, other: &mut Self, f: F) -> Result<R, BorrowMutError>
     where
         F: FnOnce(ValRefMut<T>, Option<ValRefMut<T>>) -> R,
@@ -160,6 +163,7 @@ impl<T: Clone> Data<T> {
     }
 
 
+    #[inline]
     pub fn borrow(&mut self) -> ValRef<'_, T> {
         match self {
             Data::Value(v) => ValRef::Raw(v),
@@ -173,6 +177,7 @@ impl<T: Clone> Data<T> {
         }
     }
 
+    #[inline]
     pub fn try_borrow(&mut self) -> Result<ValRef<'_, T>, BorrowError> {
         match self {
             Data::Value(v) => Ok(ValRef::Raw(v)),
@@ -186,6 +191,7 @@ impl<T: Clone> Data<T> {
         }
     }
 
+    #[inline]
     pub fn borrow_mut(&mut self) -> ValRefMut<'_, T> {
         match self {
             Data::Value(v) => ValRefMut::Raw(v),
@@ -199,6 +205,7 @@ impl<T: Clone> Data<T> {
         }
     }
 
+    #[inline]
     pub fn try_borrow_mut(&mut self) -> Result<ValRefMut<'_, T>, BorrowMutError> {
         match self {
             Data::Value(v) => Ok(ValRefMut::Raw(v)),
@@ -217,22 +224,24 @@ impl<T: Clone> Data<T> {
 }
 
 impl<T: Clone> Data<T> {
-    #[inline]
+    #[inline(always)]
     pub fn value(data: T) -> Self {
         Self::Value(data)
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn refer(data: T) -> Self {
         Self::Ref(Rc::new(RefCell::new(Defer::Own(data))))
     }
 }
 
 impl<T: Clone> Data<T> {
+    #[inline(always)]
     pub fn is_ref(&self) -> bool {
         matches!(self, Data::Ref(_))
     }
-
+    
+    #[inline(always)]
     pub fn is_val(&self) -> bool {
         matches!(self, Data::Value(_))
     }
